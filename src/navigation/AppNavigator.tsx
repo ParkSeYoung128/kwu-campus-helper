@@ -9,6 +9,7 @@ import { CafeteriaScreen } from '../screens/CafeteriaScreen';
 import { DDayScreen } from '../screens/DDayScreen';
 import { MeetingScreen } from '../screens/MeetingScreen';
 import { SettingsScreen } from '../screens/SettingsScreen';
+import { GraduationScreen } from '../screens/GraduationScreen';
 
 const Tab = createBottomTabNavigator<RootTabParamList>();
 const HomeStack = createNativeStackNavigator();
@@ -16,6 +17,7 @@ const CafeteriaStack = createNativeStackNavigator();
 const DDayStack = createNativeStackNavigator();
 const MeetingStack = createNativeStackNavigator();
 const SettingsStack = createNativeStackNavigator();
+const GraduationStack = createNativeStackNavigator();
 
 // 각 탭에 대한 Stack Navigator
 const HomeStackNavigator = () => {
@@ -90,6 +92,23 @@ const MeetingStackNavigator = () => {
         }}
       />
     </MeetingStack.Navigator>
+  );
+};
+
+const GraduationStackNavigator = () => {
+  return (
+    <GraduationStack.Navigator>
+      <GraduationStack.Screen
+        name="GraduationMain"
+        component={GraduationScreen}
+        options={{
+          title: '졸업 로드맵',
+          headerStyle: { backgroundColor: '#fff' },
+          headerTintColor: '#333',
+          headerTitleStyle: { fontWeight: 'bold' },
+        }}
+      />
+    </GraduationStack.Navigator>
   );
 };
 
@@ -173,6 +192,16 @@ export const AppNavigator = () => {
             tabBarLabel: '회의',
             tabBarIcon: ({ color, size }) => (
               <Text style={{ color, fontSize: size }}>👥</Text>
+            ),
+          }}
+        />
+        <Tab.Screen
+          name="Roadmap"
+          component={GraduationStackNavigator}
+          options={{
+            tabBarLabel: '로드맵',
+            tabBarIcon: ({ color, size }) => (
+              <Text style={{ color, fontSize: size }}>🎓</Text>
             ),
           }}
         />
