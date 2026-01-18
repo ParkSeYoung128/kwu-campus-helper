@@ -115,6 +115,13 @@ export type AppAction =
   | { type: 'UPDATE_CAFETERIA_MENU'; payload: CafeteriaMenu[] }
   | { type: 'UPDATE_NOTIFICATIONS'; payload: Partial<AppState['notifications']> };
 
+// [추가] 선수과목 관계 정의
+export interface PrerequisiteRule {
+  course: string; // 후수 과목 (예: 데이터구조설계)
+  required: string; // 선수 과목 (예: C프로그래밍)
+  message: string; // 경고 메시지
+}
+
 // 네비게이션 타입
 export type RootTabParamList = {
   Home: undefined;
