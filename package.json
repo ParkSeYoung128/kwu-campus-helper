@@ -14,6 +14,8 @@
     "@react-navigation/native-stack": "^6.9.17",
     "babel-preset-expo": "~54.0.9",
     "expo": "^54.0.31",
+    "expo-device": "~8.0.10",
+    "expo-notifications": "~0.32.16",
     "react": "19.1.0",
     "react-native": "0.81.5",
     "react-native-chart-kit": "^6.12.0",
