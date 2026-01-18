@@ -1,3 +1,5 @@
+// src/utils/graduationUtils.ts
+
 import {
   GraduationResult,
   TranscriptItem,
@@ -9,13 +11,11 @@ import {
   COMMON_COURSES,
   GENERAL_CREDIT_REQUIREMENTS,
   COURSE_NAME_ALIASES,
-  PREREQUISITE_RULES, // 선수과목 규칙 추가됨
+  PREREQUISITE_RULES,
 } from '../data/graduationRules';
 
-// 과목명 정규화 (공백 제거 및 별칭 처리)
 const normalizeCourseName = (name: string): string => {
   const cleanName = name.replace(/\s+/g, '');
-  // 별칭 테이블 확인
   for (const [oldName, newName] of Object.entries(COURSE_NAME_ALIASES)) {
     if (cleanName === oldName.replace(/\s+/g, '')) {
       return newName;
@@ -31,7 +31,7 @@ export const analyzeGraduationRequirement = (
 ): GraduationResult => {
   const result: GraduationResult = {
     totalCredits: 0,
-    totalRequired: 130, // 졸업 기준 학점
+    totalRequired: 130,
     categories: { labels: [], data: [] },
     details: {
       majorRequired: { passed: false, missing: [] },
@@ -52,11 +52,10 @@ export const analyzeGraduationRequirement = (
     },
   };
 
-  // --- 1. 전체 학점 계산 ---
+  // 1. 전체 학점
   result.totalCredits = transcript.reduce((sum, item) => sum + item.credits, 0);
 
-  // --- 2. 전공 필수 분석 (7과목) ---
-  // 사용자가 수강한 과목명 집합 (정규화됨)
+  // 2. 전공 필수
   const takenCourseNames = new Set(
     transcript.map((item) => normalizeCourseName(item.courseName))
   );
@@ -70,13 +69,10 @@ export const analyzeGraduationRequirement = (
     missing: missingMajorRequired,
   };
 
-  // --- 3. 세부 전공 분석 (학번별 로직 분기) ---
+  // 3. 세부 전공
   const isAfter2024 = admissionYear >= 2024;
-
-  // 3-1. 공통 과목 리스트 선택 (24학번부터 공통과목 축소 반영)
   const commonList = isAfter2024 ? COMMON_COURSES.from2024 : COMMON_COURSES.until2023;
-
-  // 3-2. 컴퓨터정보공학부 개설 과목만 필터링 (타과 불인정)
+  
   const myMajorTranscript = transcript.filter(
     (item) => item.department === '컴퓨터정보공학부' || !item.department
   );
@@ -85,7 +81,6 @@ export const analyzeGraduationRequirement = (
   let otherMajorCount = 0;
   let specificMajorCredits = 0;
 
-  // 본인 전공, 타 전공 구분
   const myMajorList = SPECIFIC_MAJOR_COURSES[specificMajor];
   const otherMajorType = specificMajor === 'system' ? 'info' : 'system';
   const otherMajorList = SPECIFIC_MAJOR_COURSES[otherMajorType];
@@ -93,27 +88,21 @@ export const analyzeGraduationRequirement = (
   myMajorTranscript.forEach((item) => {
     const normName = normalizeCourseName(item.courseName);
     
-    // 세부전공 관련 과목인지 확인
     const isCommon = commonList.includes(normName);
     const isMyMajor = myMajorList.includes(normName);
     const isOtherMajor = otherMajorList.includes(normName);
 
-    // 공통, 본인, 타전공 모두 학점 인정
     if (isCommon || isMyMajor || isOtherMajor) {
       specificMajorCredits += item.credits;
-      
       if (isMyMajor) myMajorCount++;
-      // 공통과목은 타전공 카운트에서 제외 (순수 타전공만 카운트)
       if (isOtherMajor && !isCommon && !isMyMajor) otherMajorCount++;
     }
   });
 
-  // 3-3. 학번별 통과 조건 검사
   const messages: string[] = [];
   let isSpecificPassed = false;
 
   if (isAfter2024) {
-    // [2024학번 이후] 본인2 + 타전공1 + 총 30학점 (엄격해짐)
     const cond1 = specificMajorCredits >= 30;
     const cond2 = myMajorCount >= 2;
     const cond3 = otherMajorCount >= 1;
@@ -127,7 +116,6 @@ export const analyzeGraduationRequirement = (
       messages.push('세부전공 요건을 모두 충족했습니다.');
     }
   } else {
-    // [2023학번 이전] 본인1 + 총 30학점 (비교적 완화)
     const cond1 = specificMajorCredits >= 30;
     const cond2 = myMajorCount >= 1;
 
@@ -140,13 +128,11 @@ export const analyzeGraduationRequirement = (
     }
   }
 
-  // ★ [통합] 선수과목(권장) 체크 로직 추가 ★
-  // (팀원 코드의 장점을 흡수하여 경고 메시지에 추가)
+  // ★ [수정] 필수 선수과목 체크 로직 ★
   PREREQUISITE_RULES.forEach((rule) => {
-    // 이미 normalize된 takenCourseNames를 사용해 검사
-    // 주의: rule.course와 rule.required도 데이터 파일에 정확한 명칭으로 있어야 함
+    // 후수 과목은 이수했는데(taken), 필수 선수 과목은 이수하지 않은 경우(!taken)
     if (takenCourseNames.has(rule.course) && !takenCourseNames.has(rule.required)) {
-      messages.push(`⚠️ [권장] ${rule.message}`);
+      messages.push(`⚠️ [필수 선수과목 미이수] ${rule.message}`);
     }
   });
 
@@ -159,8 +145,7 @@ export const analyzeGraduationRequirement = (
     messages,
   };
 
-  // --- 4. 교양 분석 ---
-  // e러닝 등은 제외 (isCyber Check)
+  // 4. 교양 분석
   const generalTranscript = transcript.filter(
     (item) => 
       (item.category.startsWith('general') || !item.category.startsWith('major')) &&
@@ -169,7 +154,6 @@ export const analyzeGraduationRequirement = (
 
   const currentGeneralCredits = generalTranscript.reduce((sum, item) => sum + item.credits, 0);
   
-  // 학번별 교양 기준 학점 가져오기
   let requiredGeneralCredits = GENERAL_CREDIT_REQUIREMENTS.y2019_2023;
   if (admissionYear <= 2016) requiredGeneralCredits = GENERAL_CREDIT_REQUIREMENTS.y2016;
   else if (admissionYear <= 2018) requiredGeneralCredits = GENERAL_CREDIT_REQUIREMENTS.y2017_2018;
@@ -186,12 +170,10 @@ export const analyzeGraduationRequirement = (
     ],
   };
 
-  // --- 5. 차트 데이터 생성 ---
+  // 5. 차트 데이터
   const majorReqRate = result.details.majorRequired.passed ? 100 : Math.round(((7 - missingMajorRequired.length) / 7) * 100);
   const specificRate = Math.min(Math.round((specificMajorCredits / 30) * 100), 100);
   const generalRate = Math.min(Math.round((currentGeneralCredits / requiredGeneralCredits) * 100), 100);
-  
-  // 전체 학점 달성률
   const totalRate = Math.min(Math.round((result.totalCredits / 130) * 100), 100);
 
   result.categories = {
