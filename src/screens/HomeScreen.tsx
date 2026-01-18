@@ -131,6 +131,16 @@ export const HomeScreen: React.FC = () => {
           회의 시간 추천 기능을 사용해보세요
         </Text>
       </SummaryCard>
+
+      <SummaryCard
+        title="졸업 로드맵"
+        subtitle="졸업 요건 확인 및 로드맵 확인"
+        onPress={() => navigation.navigate('Roadmap' as any)}
+      >
+        <Text style={styles.emptyText}>
+          수강한 과목을 입력해 졸업 요건과 로드맵을 확인해보세요
+        </Text>
+      </SummaryCard>
     </ScrollView>
   );
 };
