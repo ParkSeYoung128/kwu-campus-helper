@@ -1,15 +1,7 @@
 // availability.test.ts
 //
-// 주의: 이 프로젝트에는 아직 테스트 러너(jest 등)가 설치되어 있지 않습니다.
-// 이 파일은 parseAvailabilityText / slotToTimeRange / candidateToMeetingTime의
-// 기대 동작을 문서화한 회귀 테스트 스펙이며, 실제 실행은 다음 두 가지 방법 중 하나로 가능합니다.
-//   1) jest + ts-jest(또는 @swc/jest) 설치 후 `npx jest` 로 그대로 실행
-//   2) (임시 검증용) tsc로 컴파일한 뒤 node --test 등으로 실행
-//
-// 이번 작업에서는 새 패키지 설치 전 승인을 받기로 한 제약사항에 따라
-// jest를 설치하지 않았고, 대신 tsc 컴파일 + node assert 조합으로
-// 아래와 동일한 케이스 16개를 모두 통과시키는 것을 확인했습니다.
-// (자세한 내용은 작업 리포트의 4단계 검증 섹션 참고)
+// parseAvailabilityText / slotToTimeRange / candidateToMeetingTime에 대한
+// jest 테스트. `npx jest`로 실행한다 (package.json의 jest-expo preset 참고).
 
 import {
   parseAvailabilityText,
@@ -91,14 +83,26 @@ describe('slotToTimeRange / candidateToMeetingTime', () => {
   it('월요일 슬롯은 기준 주의 월요일 날짜로 매핑된다', () => {
     const monday = getMondayOfThisWeek(new Date('2026-09-07T00:00:00')); // 2026-09-07 = 월
     const range = slotToTimeRange({ day: '월', start: '10:00', end: '12:00' }, monday);
-    expect(range.start.slice(0, 10)).toBe('2026-09-07');
-    expect(new Date(range.start).getHours()).toBe(10);
+
+    // 문자열을 슬라이스해서 날짜를 비교하지 않고, Date로 파싱한 뒤
+    // 로컬 캘린더 날짜(연/월/일)를 직접 확인한다. 문자열 포맷이
+    // 나중에 바뀌어도(예: UTC ISO <-> naive 벽시계 문자열) 이 테스트가
+    // "정말 그 날짜인지"를 검증하도록 하기 위함이다.
+    const start = new Date(range.start);
+    expect(start.getFullYear()).toBe(2026);
+    expect(start.getMonth()).toBe(8); // 0-indexed: 8 = 9월
+    expect(start.getDate()).toBe(7);
+    expect(start.getHours()).toBe(10);
   });
 
   it('일요일 슬롯은 기준 주 +6일로 매핑된다', () => {
     const monday = getMondayOfThisWeek(new Date('2026-09-07T00:00:00'));
     const range = slotToTimeRange({ day: '일', start: '09:00', end: '10:00' }, monday);
-    expect(range.start.slice(0, 10)).toBe('2026-09-13');
+
+    const start = new Date(range.start);
+    expect(start.getFullYear()).toBe(2026);
+    expect(start.getMonth()).toBe(8);
+    expect(start.getDate()).toBe(13);
   });
 
   it('ISO datetime을 요일+HH:MM으로 정확히 역변환한다', () => {
@@ -106,5 +110,44 @@ describe('slotToTimeRange / candidateToMeetingTime', () => {
     expect(mt.day).toBe('수');
     expect(mt.startTime).toBe('14:00');
     expect(mt.endTime).toBe('16:00');
+  });
+
+  // 회귀 테스트 (CodeRabbit 리뷰에서 지적된 Major 이슈):
+  // 이전 구현은 Date.toISOString()으로 UTC 변환을 해서 전송했는데,
+  // 백엔드는 timezone 필드를 실제로 쓰지 않고 tzinfo만 제거한 뒤
+  // 숫자 그대로 계산한다. 그 결과 기기 로컬 타임존이 UTC가 아니면
+  // (예: America/Los_Angeles에서 "10:00"을 입력) 백엔드가 받는 시각이
+  // 사용자가 입력한 시각과 달라지는 버그가 있었다(10:00 -> 17:00로 둔갑).
+  // slotToTimeRange를 "타임존 변환 없는 벽시계 문자열"을 만들도록 고쳐서,
+  // 기기 타임존이 무엇이든 항상 사용자가 입력한 숫자 그대로 나가야 한다.
+  describe('타임존 독립성 (기기 로컬 타임존과 무관하게 동일한 벽시계 시각을 반환해야 한다)', () => {
+    const ORIGINAL_TZ = process.env.TZ;
+
+    afterEach(() => {
+      if (ORIGINAL_TZ === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = ORIGINAL_TZ;
+      }
+    });
+
+    const buildRangeUnderTz = (tz: string) => {
+      process.env.TZ = tz;
+      // 명시적 로컬 컴포넌트(연, 월, 일)로 구성 - 문자열 파싱으로 인한
+      // 타임존 모호성을 피하기 위해 Date(y, m, d, ...) 형태를 사용한다.
+      const monday = getMondayOfThisWeek(new Date(2026, 8, 7, 12, 0, 0)); // 2026-09-07(월)
+      return slotToTimeRange({ day: '월', start: '10:00', end: '12:00' }, monday);
+    };
+
+    it('UTC / Asia/Seoul / America/Los_Angeles에서 동일한 결과를 낸다', () => {
+      const utc = buildRangeUnderTz('UTC');
+      const seoul = buildRangeUnderTz('Asia/Seoul');
+      const la = buildRangeUnderTz('America/Los_Angeles');
+
+      expect(seoul).toEqual(utc);
+      expect(la).toEqual(utc);
+      expect(utc.start).toBe('2026-09-07T10:00:00');
+      expect(utc.end).toBe('2026-09-07T12:00:00');
+    });
   });
 });

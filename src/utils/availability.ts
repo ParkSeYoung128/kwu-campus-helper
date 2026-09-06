@@ -96,7 +96,29 @@ export function getMondayOfThisWeek(reference: Date = new Date()): Date {
   return d;
 }
 
-/** 파싱된 슬롯(요일+시각)을 "기준 주"의 ISO datetime 문자열(TimeRange)로 변환 */
+/**
+ * Date를 "타임존 정보 없는" 벽시계 시각 문자열(YYYY-MM-DDTHH:mm:ss)로 직렬화한다.
+ *
+ * Date.prototype.toISOString()을 쓰지 않는 이유:
+ * toISOString()은 항상 UTC로 변환한 뒤 'Z'를 붙인다. 기기 로컬 타임존이
+ * UTC가 아니면(예: Asia/Seoul, America/Los_Angeles) 사용자가 입력한
+ * "10:00"이라는 벽시계 시각이 다른 숫자(예: 01:00, 17:00)로 바뀌어
+ * 전송된다. 반면 백엔드(backend/main.py)는 timezone 필드를 실제로
+ * 사용하지 않고 tzinfo만 제거한 뒤 숫자 그대로 슬롯 계산을 한다 -
+ * 즉 백엔드는 애초에 "타임존 없는 벽시계 시각"만 다루도록 설계돼
+ * 있다. 따라서 프론트도 UTC로 변환하지 않고, 사용자가 입력한 시/분
+ * 숫자를 그대로 실어 보내야 프론트-백엔드가 같은 시각을 같은 시각으로
+ * 취급한다(자세한 배경은 PR 코멘트 참고).
+ */
+function toNaiveIsoString(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  );
+}
+
+/** 파싱된 슬롯(요일+시각)을 "기준 주"의 벽시계 시각 문자열(TimeRange)로 변환 */
 export function slotToTimeRange(
   slot: ParsedSlot,
   weekStart: Date = getMondayOfThisWeek()
@@ -113,7 +135,7 @@ export function slotToTimeRange(
   const end = new Date(date);
   end.setHours(eh, em, 0, 0);
 
-  return { start: start.toISOString(), end: end.toISOString() };
+  return { start: toNaiveIsoString(start), end: toNaiveIsoString(end) };
 }
 
 /** 백엔드 Candidate 응답(datetime 기준)을 UI용 MeetingTime(요일+HH:MM)으로 변환 */
