@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import threading
 import time
 from abc import ABC, abstractmethod
+from datetime import date as Date
 from typing import List, Optional
 
 import httpx
@@ -18,7 +21,11 @@ class CafeteriaMeals(BaseModel):
 
 
 class CafeteriaMenu(BaseModel):
-    date: str  # YYYY-MM-DD
+    # date 타입으로 강제한다. LLM이 "월요일" 같은 비-날짜 문자열을 반환해도
+    # pydantic 검증 단계에서 즉시 실패하게 만들어, 잘못된 데이터가 캐시나
+    # 응답까지 흘러가는 것을 막는다. FastAPI가 JSON 직렬화 시 자동으로
+    # "YYYY-MM-DD" 문자열로 내보내므로 프론트엔드 계약(date: string)은 그대로 유지된다.
+    date: Date
     meals: CafeteriaMeals
 
 
@@ -53,6 +60,8 @@ SOURCE_URL = "https://www.kw.ac.kr/ko/life/facility11.jsp"
 
 # OpenAI Structured Outputs(JSON Schema strict mode)에 사용할 스키마.
 # 요일별로 date(YYYY-MM-DD)와 아침/중식/석식 메뉴 배열을 추출하도록 강제한다.
+# (실제 타입 강제는 CafeteriaMenu 쪽 pydantic date 필드가 최종적으로 담당한다 -
+#  JSON Schema의 "string"은 형식까지 검증하지 않으므로.)
 EXTRACTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -75,6 +84,26 @@ EXTRACTION_SCHEMA = {
     "additionalProperties": False,
 }
 
+_SCRIPT_OR_STYLE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+_TAG = re.compile(r"<[^>]+>")
+_WHITESPACE = re.compile(r"[ \t ]+")
+
+
+def _html_to_text(html: str) -> str:
+    """LLM에 넘기기 전에 HTML을 정제한다.
+
+    <script>/<style> 내용과 태그를 제거해서 (1) 토큰 낭비를 줄이고
+    (2) 페이지 앞부분의 스크립트/내비게이션 때문에 실제 메뉴 내용이
+    글자 수 제한 밖으로 밀려나는 문제를 방지한다. 단순 html[:N] 같은
+    "앞에서부터 N글자" 방식은 메뉴 테이블이 페이지 뒷부분에 있으면
+    항상 빈 결과만 낳을 수 있어 사용하지 않는다.
+    """
+    text = _SCRIPT_OR_STYLE.sub(" ", html)
+    text = _TAG.sub(" ", text)
+    text = _WHITESPACE.sub(" ", text)
+    lines = [line.strip() for line in text.splitlines()]
+    return "\n".join(line for line in lines if line)
+
 
 class LLMExtractCafeteriaProvider(CafeteriaMenuProvider):
     """광운대 학식 페이지를 백엔드가 직접 fetch한 뒤, OpenAI로 구조화 추출하는 provider.
@@ -88,10 +117,13 @@ class LLMExtractCafeteriaProvider(CafeteriaMenuProvider):
     - 최대 cache_ttl_seconds(기본 1일)에 한 번만 실제 fetch+LLM 호출을 한다.
       매 요청마다 호출하면 (1) kw.ac.kr에 불필요한 부하를 주고 (2) OpenAI API
       비용이 요청 수에 비례해 계속 발생하기 때문이다.
-    - fetch 또는 LLM 호출이 실패하면 500으로 죽지 않고, 직전에 성공한 캐시가
-      있으면 그것을 그대로 반환한다. 캐시조차 없으면 CafeteriaExtractionError를
-      던지고, 엔드포인트에서 502로 변환한다(호출자가 "일시적으로 원본을
-      가져올 수 없다"를 구분할 수 있도록).
+    - 캐시 갱신은 락으로 직렬화한다(single-flight). 락이 없으면 캐시 만료
+      직후 동시에 들어온 요청들이 전부 캐시 체크를 통과해 각자 fetch+LLM
+      호출을 중복 실행하게 된다.
+    - fetch/LLM 호출이 실패하거나 결과가 비어 있으면(= 잘못 잘린 입력 등으로
+      추출 실패) 500으로 죽지 않고 직전에 성공한 캐시를 그대로 반환한다.
+      캐시조차 없으면 CafeteriaExtractionError를 던지고, 엔드포인트에서
+      502로 변환한다.
     """
 
     def __init__(
@@ -100,6 +132,7 @@ class LLMExtractCafeteriaProvider(CafeteriaMenuProvider):
         source_url: str = SOURCE_URL,
         cache_ttl_seconds: int = 24 * 60 * 60,
         model: str = "gpt-4o-mini",
+        request_timeout_seconds: float = 20.0,
     ):
         # 생성 시점에는 키가 없어도 예외를 던지지 않는다(예: CAFETERIA_PROVIDER=mock인
         # 환경에서 이 클래스를 아예 만들지 않으므로 상관없지만, 혹시 몰라 방어적으로 지연 검증한다).
@@ -107,24 +140,47 @@ class LLMExtractCafeteriaProvider(CafeteriaMenuProvider):
         self._source_url = source_url
         self._cache_ttl_seconds = cache_ttl_seconds
         self._model = model
+        self._request_timeout_seconds = request_timeout_seconds
         self._cache: Optional[List[CafeteriaMenu]] = None
         self._cache_at: float = 0.0
+        self._lock = threading.Lock()
 
     def get_week_menu(self) -> List[CafeteriaMenu]:
-        now = time.time()
-        if self._cache is not None and (now - self._cache_at) < self._cache_ttl_seconds:
-            return self._cache
+        # 락 밖에서 먼저 확인(빠른 경로): 캐시가 유효하면 대부분의 요청은
+        # 락을 기다릴 필요 없이 바로 반환된다.
+        cached = self._read_cache_if_fresh()
+        if cached is not None:
+            return cached
 
-        try:
-            html = self._fetch_page()
-            menus = self._extract_with_llm(html)
-            self._cache = menus
-            self._cache_at = now
-            return menus
-        except Exception as exc:  # noqa: BLE001 - 원인과 무관하게 캐시 폴백을 우선한다
-            if self._cache is not None:
-                return self._cache
-            raise CafeteriaExtractionError(str(exc)) from exc
+        with self._lock:
+            # double-checked locking: 락을 기다리는 동안 다른 스레드가 이미
+            # 갱신을 끝냈을 수 있으므로 다시 한 번 확인한다(single-flight).
+            cached = self._read_cache_if_fresh()
+            if cached is not None:
+                return cached
+
+            try:
+                html = self._fetch_page()
+                menus = self._extract_with_llm(html)
+                if not menus:
+                    raise CafeteriaExtractionError(
+                        "LLM 추출 결과가 비어 있습니다(days=[]). 원본 텍스트가 잘렸거나 "
+                        "페이지 구조가 예상과 달라졌을 수 있습니다."
+                    )
+                self._cache = menus
+                self._cache_at = time.time()
+                return menus
+            except Exception as exc:  # noqa: BLE001 - 원인과 무관하게 캐시 폴백을 우선한다
+                if self._cache is not None:
+                    return self._cache
+                raise CafeteriaExtractionError(str(exc)) from exc
+
+    def _read_cache_if_fresh(self) -> Optional[List[CafeteriaMenu]]:
+        if self._cache is None:
+            return None
+        if (time.time() - self._cache_at) < self._cache_ttl_seconds:
+            return self._cache
+        return None
 
     def _fetch_page(self) -> str:
         resp = httpx.get(self._source_url, timeout=10.0)
@@ -139,19 +195,27 @@ class LLMExtractCafeteriaProvider(CafeteriaMenuProvider):
         # openai 패키지를 아예 로드하지 않도록 한다.
         from openai import OpenAI
 
-        client = OpenAI(api_key=self._api_key)
+        # timeout/max_retries를 명시한다. openai 기본값(600초 타임아웃, 최대 2회
+        # 재시도)을 그대로 두면 OpenAI가 응답이 느릴 때 "캐시로 폴백"하기까지
+        # 너무 오래 걸려 사실상 폴백의 의미가 없어진다.
+        client = OpenAI(
+            api_key=self._api_key,
+            timeout=self._request_timeout_seconds,
+            max_retries=0,
+        )
+        text = _html_to_text(html)
         completion = client.chat.completions.create(
             model=self._model,
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "너는 대학교 학식 페이지 HTML에서 요일별 식단을 추출하는 도구다. "
-                        "주어진 HTML에서 이번 주 평일(월~금)의 아침/중식/석식 메뉴를 찾아 "
+                        "너는 대학교 학식 페이지 텍스트에서 요일별 식단을 추출하는 도구다. "
+                        "주어진 텍스트에서 이번 주 평일(월~금)의 아침/중식/석식 메뉴를 찾아 "
                         "지정된 JSON 스키마로만 응답해라. 해당하는 항목이 없으면 빈 배열로 남겨라."
                     ),
                 },
-                {"role": "user", "content": html[:20000]},
+                {"role": "user", "content": text[:40000]},
             ],
             response_format={
                 "type": "json_schema",
