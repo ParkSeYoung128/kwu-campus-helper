@@ -7,6 +7,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from cafeteria import (
+    CafeteriaExtractionError,
+    CafeteriaMenu,
+    get_default_provider,
+)
+
 
 # ---------- Request/Response Models ----------
 class TimeRange(BaseModel):
@@ -174,6 +180,19 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+# 모듈 로드 시 한 번만 생성 - LLMExtractCafeteriaProvider는 내부에 캐시를 들고 있으므로
+# 요청마다 새로 만들면 캐싱이 무의미해진다.
+_cafeteria_provider = get_default_provider()
+
+
+@app.get("/cafeteria/week", response_model=List[CafeteriaMenu])
+def cafeteria_week():
+    try:
+        return _cafeteria_provider.get_week_menu()
+    except CafeteriaExtractionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.post("/api/meeting/suggest", response_model=SuggestResponse)
