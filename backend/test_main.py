@@ -13,6 +13,8 @@
 
 from datetime import datetime
 
+import pytest
+
 from main import SuggestRequest, suggest_meeting
 
 
@@ -97,3 +99,36 @@ def test_no_overlap_returns_empty_candidates():
     result = suggest_meeting(req)
 
     assert result.candidates == []
+
+
+# ---------- /cafeteria/week 엔드포인트 배선(wiring) 테스트 ----------
+# suggest_meeting과 달리 이 엔드포인트는 순수 함수가 아니라 모듈 전역
+# _cafeteria_provider에 의존하므로, main 모듈을 직접 import해서 provider를
+# MockCafeteriaMenuProvider로 바꿔치기한 뒤 엔드포인트 함수를 호출한다.
+# (TestClient/httpx 의존성을 추가하지 않기 위해 FastAPI 라우팅 계층은 거치지 않고
+# 엔드포인트 함수 자체를 직접 호출해 검증한다.)
+import main as main_module
+from cafeteria import CafeteriaExtractionError, CafeteriaMenu, CafeteriaMeals, MockCafeteriaMenuProvider
+from fastapi import HTTPException
+
+
+def test_cafeteria_week_returns_provider_data(monkeypatch):
+    menus = [CafeteriaMenu(date="2026-09-07", meals=CafeteriaMeals(lunch=["김치찌개"]))]
+    monkeypatch.setattr(main_module, "_cafeteria_provider", MockCafeteriaMenuProvider(menus))
+
+    result = main_module.cafeteria_week()
+
+    assert result == menus
+
+
+def test_cafeteria_week_returns_502_when_provider_fails(monkeypatch):
+    class FailingProvider:
+        def get_week_menu(self):
+            raise CafeteriaExtractionError("원본 페이지를 가져올 수 없습니다.")
+
+    monkeypatch.setattr(main_module, "_cafeteria_provider", FailingProvider())
+
+    with pytest.raises(HTTPException) as exc_info:
+        main_module.cafeteria_week()
+
+    assert exc_info.value.status_code == 502
