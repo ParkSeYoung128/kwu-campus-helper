@@ -92,6 +92,19 @@ export interface MeetingTime {
   day: string;
 }
 
+// 백엔드 /api/meeting/suggest 응답 계약 (backend/main.py의 Candidate/SuggestResponse와 대응)
+export interface MeetingSuggestCandidate {
+  start: string; // ISO datetime
+  end: string; // ISO datetime
+  available_members: string[];
+  available_count: number;
+  score: number;
+}
+
+export interface MeetingSuggestResponse {
+  candidates: MeetingSuggestCandidate[];
+}
+
 // 앱 상태 타입
 export interface AppState {
   cafeteriaMenus: CafeteriaMenu[];
