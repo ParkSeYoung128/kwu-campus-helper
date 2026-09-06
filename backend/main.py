@@ -58,10 +58,28 @@ def _ceil_to_slot(dt: datetime, slot_minutes: int) -> datetime:
     return f if f == dt else f + slot
 
 
+def _to_naive(dt: datetime) -> datetime:
+    """타임존 정보가 있는 datetime을 naive로 변환한다.
+
+    프론트엔드(JS의 Date.prototype.toISOString())는 항상 'Z'가 붙은
+    타임존 인식(aware) UTC 문자열을 보내는데, 이 모듈의 슬롯 계산 로직은
+    전부 naive datetime(datetime(dt.year, dt.month, dt.day) 등) 기준으로
+    작성되어 있어 aware와 naive를 섞어서 빼면 TypeError가 발생한다. 회의
+    시간 추천은 절대 시각이 아니라 "주어진 값 그대로의 상대적 시간 격자"만
+    다루면 되므로, tzinfo만 제거해서 이후 로직과 호환되게 만든다.
+
+    (feature/meeting-suggest-integration에서 처음 발견/수정된 문제를
+    이 브랜치에도 동일하게 반영한 것 - PR 본문의 "브랜치 간 의존관계" 참고)
+    """
+    if dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
 def _expand_availability_to_slots(r: TimeRange, slot_minutes: int) -> List[datetime]:
     r.validate_range()
-    start = _ceil_to_slot(r.start, slot_minutes)
-    end = _floor_to_slot(r.end, slot_minutes)
+    start = _ceil_to_slot(_to_naive(r.start), slot_minutes)
+    end = _floor_to_slot(_to_naive(r.end), slot_minutes)
     if end < start:
         return []
     slots = []
